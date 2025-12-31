@@ -92,7 +92,7 @@ jobs:
       - name: Azure Login
         uses: azure/login@v1
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          creds: ${{ format('{{"clientId":"{0}","clientSecret":"{1}","subscriptionId":"{2}","tenantId":"{3}"}}', secrets.AZURE_CLIENT_ID, secrets.AZURE_CLIENT_SECRET, secrets.AZURE_SUBSCRIPTION_ID, secrets.TENANT_ID) }}
       
       - name: Deploy ARM Template to Azure Sentinel
         uses: azure/arm-deploy@v1
