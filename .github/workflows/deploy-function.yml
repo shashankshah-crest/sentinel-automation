@@ -12,6 +12,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     
     steps:
       - name: Checkout repository
@@ -100,10 +101,23 @@ jobs:
           resourceGroupName: ${{ secrets.AZURE_RESOURCE_GROUP }}
           template: ${{ steps.update_arm.outputs.updated_arm_file }}
           parameters: >
-            functionAppName=${{ secrets.FUNCTION_APP_NAME }}
-            sentinelWorkspaceId=${{ secrets.SENTINEL_WORKSPACE_ID }}
-            sentinelWorkspaceName=${{ secrets.SENTINEL_WORKSPACE_NAME }}
-            location=${{ secrets.AZURE_LOCATION }}
+            FunctionName=${{ secrets.FUNCTION_APP_NAME }}
+            Location=${{ secrets.AZURE_LOCATION }}
+            WorkspaceName=${{ secrets.WORKSPACE_NAME }}
+            VectraAPIBaseURL=${{ secrets.VECTRA_API_BASE_URL }}
+            VectraAPIClientId=${{ secrets.VECTRA_API_CLIENT_ID }}
+            VectraAPIClientSecret=${{ secrets.VECTRA_API_CLIENT_SECRET }}
+            KeyVaultName=${{ secrets.KEY_VAULT_NAME }}
+            AzureClientID=${{ secrets.AZURE_CLIENT_ID }}
+            AzureClientSecret=${{ secrets.AZURE_CLIENT_SECRET }}
+            TenantID=${{ secrets.TENANT_ID }}
+            AzureEntraObjectID=${{ secrets.AZURE_ENTRA_OBJECT_ID }}
+            AppInsightsWorkspaceResourceID=${{ secrets.APP_INSIGHTS_WORKSPACE_RESOURCE_ID }}
+            DetectionsTableName=${{ secrets.DETECTIONS_TABLE_NAME || 'Detections_Data' }}
+            DetectionsResponseSize=${{ secrets.DETECTIONS_RESPONSE_SIZE || 'regular' }}
+            ExcludeGroupedDetails=${{ secrets.EXCLUDE_GROUPED_DETAILS || 'true' }}
+            DetectionsSchedule=${{ secrets.DETECTIONS_SCHEDULE || '0 */10 * * * *' }}
+            LogLevel=${{ secrets.LOG_LEVEL || 'Info' }}
       
       - name: Deployment Summary
         run: |
@@ -114,4 +128,4 @@ jobs:
           echo "**Package URL:** ${{ steps.raw_url.outputs.raw_url }}" >> $GITHUB_STEP_SUMMARY
           echo "**Function App:** ${{ secrets.FUNCTION_APP_NAME }}" >> $GITHUB_STEP_SUMMARY
           echo "**Resource Group:** ${{ secrets.AZURE_RESOURCE_GROUP }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Sentinel Workspace:** ${{ secrets.SENTINEL_WORKSPACE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Workspace:** ${{ secrets.WORKSPACE_NAME }}" >> $GITHUB_STEP_SUMMARY
