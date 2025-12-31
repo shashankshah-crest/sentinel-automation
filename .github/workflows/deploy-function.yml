@@ -12,7 +12,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: production
+    environment: Sentinel
     
     steps:
       - name: Checkout repository
