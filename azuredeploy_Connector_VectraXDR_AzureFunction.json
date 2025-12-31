@@ -1,0 +1,1183 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "FunctionName": {
+      "defaultValue": "VectraXDR",
+      "minLength": 1,
+      "maxLength": 11,
+      "type": "string",
+      "metadata": {
+        "description": "Specifies the name of the Function App."
+      }
+    },
+    "Location": {
+      "defaultValue": "[resourceGroup().location]",
+      "type": "string",
+      "metadata": {
+        "description": "The location in which the data collection rules and data collection endpoints should be deployed."
+      }
+    },
+    "WorkspaceName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Log analytics workspace name. Can be found under Log analytics 'Settings'."
+      }
+    },
+    "VectraAPIBaseURL": {
+      "type": "string",
+      "metadata": {
+        "description": "Enter BaseURL starting with 'https://' followed by hostname (Example: https://[your-vectra-instance-name])"
+      }
+    },
+    "VectraAPIClientId": {
+      "type": "string",
+      "metadata": {
+        "description": "Enter Vectra Client ID for Detections API Authentication"
+      }
+    },
+    "VectraAPIClientSecret": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Enter Vectra Client Secret for Detections API Authentication"
+      }
+    },
+    "KeyVaultName": {
+      "type": "string",
+      "metadata": {
+        "description": "Enter name of keyvault where OAuth tokens will be stored"
+      }
+    },
+    "AzureClientID": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Azure Client Id that you have created during app registration"
+      }
+    },
+    "AzureClientSecret": {
+      "type": "securestring",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Azure Client Secret that you have created during creating the client secret"
+      }
+    },
+    "TenantID": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Tenant Id of your Microsoft Entra Id"
+      }
+    },
+    "AzureEntraObjectID": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Enter Object id of your Microsoft Entra App"
+      }
+    },
+    "DetectionsTableName": {
+      "type": "string",
+      "defaultValue": "Detections_Data",
+      "maxLength": 52,
+      "metadata": {
+        "description": "Enter name of the table used to store Detection logs. Default is 'Detections_Data'"
+      }
+    },
+    "DetectionsResponseSize": {
+      "type": "string",
+      "defaultValue": "regular",
+      "allowedValues": [
+        "small",
+        "regular",
+        "detailed"
+      ],
+      "metadata": {
+        "description": "Response size for detections API (small, regular, detailed). Default is 'regular'"
+      }
+    },
+    "ExcludeGroupedDetails": {
+      "type": "bool",
+      "defaultValue": true,
+      "allowedValues": [
+        true,
+        false
+      ],
+      "metadata": {
+        "description": "Select true to exclude grouped details from detections. Default is true."
+      }
+    },
+    "DetectionsSchedule": {
+      "type": "string",
+      "defaultValue": "0 */10 * * * *",
+      "metadata": {
+        "description": "Enter a valid Quartz Cron-Expression. The default value is every 10 minutes"
+      }
+    },
+    "LogLevel": {
+      "type": "string",
+      "metadata": {
+        "description": "Add log level or log severity value. Default is 'Info'"
+      },
+      "allowedValues": [
+        "Debug",
+        "Info",
+        "Error",
+        "Warning"
+      ],
+      "defaultValue": "Info"
+    },
+    "AppInsightsWorkspaceResourceID": {
+      "type": "string",
+      "metadata": {
+        "description": "Migrate Classic Application Insights to Log Analytic Workspace which is retiring by 29 Febraury 2024. Use 'Log Analytic Workspace-->Properties' blade having 'Resource ID' property value. This is a fully qualified resourceId which is in format '/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.OperationalInsights/workspaces/{workspaceName}'"
+      }
+    }
+  },
+  "variables": {
+    "FunctionName": "[concat(toLower(parameters('FunctionName')), uniqueString(resourceGroup().id))]",
+    "StorageSuffix": "[environment().suffixes.storage]",
+    "suffix": "[concat('A', uniqueString(resourceGroup().id))]",
+    "endpointName": "[concat(toLower(parameters('FunctionName')),'LogsEndpoint', variables('suffix'))]",
+    "logWsResId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('WorkspaceName'))]",
+    "dataRuleName": "[concat(toLower(parameters('FunctionName')),'dataCollectionRule', variables('suffix'))]",
+    "dcrRoleName": "[concat(toLower(parameters('FunctionName')),'EntraRole', variables('suffix'))]",
+    "dcrRoleId": "[guid(subscription().id, string(variables('dcrRoleName')))]",
+    "scope": "[concat(replace(environment().portal, 'portal', 'monitor'), '/.default')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Insights/dataCollectionEndpoints",
+      "apiVersion": "2022-06-01",
+      "name": "[variables('endpointName')]",
+      "location": "[parameters('Location')]",
+      "kind": "Linux",
+      "properties": {
+        "description": "Data collection endpoint for Vectra XDR ingestion api",
+        "networkAcls": {
+          "publicNetworkAccess": "Enabled"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/tables",
+      "apiVersion": "2022-10-01",
+      "name": "[concat(parameters('WorkspaceName'), '/', parameters('DetectionsTableName'), '_CL')]",
+      "properties": {
+        "plan": "Analytics",
+        "schema": {
+          "name": "[concat(parameters('DetectionsTableName'), '_CL')]",
+          "columns": [
+            {
+              "name": "category",
+              "type": "string"
+            },
+            {
+              "name": "event_type",
+              "type": "string"
+            },
+            {
+              "name": "entity_name",
+              "type": "string"
+            },
+            {
+              "name": "detection_href",
+              "type": "string"
+            },
+            {
+              "name": "mitre",
+              "type": "dynamic"
+            },
+            {
+              "name": "certainty",
+              "type": "real"
+            },
+            {
+              "name": "d_type_vname",
+              "type": "string"
+            },
+            {
+              "name": "entity_id",
+              "type": "real"
+            },
+            {
+              "name": "event_timestamp",
+              "type": "datetime"
+            },
+            {
+              "name": "url",
+              "type": "string"
+            },
+            {
+              "name": "id",
+              "type": "real"
+            },
+            {
+              "name": "detection_id",
+              "type": "real"
+            },
+            {
+              "name": "threat",
+              "type": "real"
+            },
+            {
+              "name": "triaged",
+              "type": "boolean"
+            },
+            {
+              "name": "detection_type",
+              "type": "string"
+            },
+            {
+              "name": "severity",
+              "type": "real"
+            },
+            {
+              "name": "detail",
+              "type": "dynamic"
+            },
+            {
+              "name": "entity_uid",
+              "type": "string"
+            },
+            {
+              "name": "src_account",
+              "type": "dynamic"
+            },
+            {
+              "name": "src_account_id",
+              "type": "string"
+            },
+            {
+              "name": "src_account_name",
+              "type": "string"
+            },
+            {
+              "name": "src_account_url",
+              "type": "string"
+            },
+            {
+              "name": "src_account_groups",
+              "type": "dynamic"
+            },
+            {
+              "name": "src_host",
+              "type": "dynamic"
+            },
+            {
+              "name": "src_host_ip",
+              "type": "string"
+            },
+            {
+              "name": "src_host_name",
+              "type": "string"
+            },
+            {
+              "name": "src_host_url",
+              "type": "string"
+            },
+            {
+              "name": "src_host_groups",
+              "type": "dynamic"
+            },
+            {
+              "name": "src_host_id",
+              "type": "real"
+            },
+            {
+              "name": "src_host_is_key_asset",
+              "type": "boolean"
+            },
+            {
+              "name": "src_host_threat",
+              "type": "real"
+            },
+            {
+              "name": "src_host_certainty",
+              "type": "real"
+            },
+            {
+              "name": "src_external_host",
+              "type": "dynamic"
+            },
+            {
+              "name": "src_external_host_ip",
+              "type": "string"
+            },
+            {
+              "name": "src_external_host_name",
+              "type": "string"
+            },
+            {
+              "name": "dst_account",
+              "type": "dynamic"
+            },
+            {
+              "name": "dst_account_id",
+              "type": "string"
+            },
+            {
+              "name": "dst_account_name",
+              "type": "string"
+            },
+            {
+              "name": "dst_account_url",
+              "type": "string"
+            },
+            {
+              "name": "dst_account_groups",
+              "type": "dynamic"
+            },
+            {
+              "name": "dst_account_uid",
+              "type": "string"
+            },
+            {
+              "name": "dst_host",
+              "type": "dynamic"
+            },
+            {
+              "name": "dst_host_id",
+              "type": "string"
+            },
+            {
+              "name": "dst_host_ip",
+              "type": "string"
+            },
+            {
+              "name": "dst_host_name",
+              "type": "string"
+            },
+            {
+              "name": "dst_host_session_luid",
+              "type": "string"
+            },
+            {
+              "name": "dst_host_url",
+              "type": "string"
+            },
+            {
+              "name": "dst_host_groups",
+              "type": "dynamic"
+            },
+            {
+              "name": "dst_domain",
+              "type": "dynamic"
+            },
+            {
+              "name": "dst_domain_domain",
+              "type": "string"
+            },
+            {
+              "name": "dst_domain_dns",
+              "type": "string"
+            },
+            {
+              "name": "dst_domain_external_target",
+              "type": "string"
+            },
+            {
+              "name": "summary",
+              "type": "dynamic"
+            },
+            {
+              "name": "filters",
+              "type": "dynamic"
+            },
+            {
+              "name": "filters_triaged",
+              "type": "boolean"
+            },
+            {
+              "name": "filters_filtered_by_user",
+              "type": "boolean"
+            },
+            {
+              "name": "filters_filtered_by_ai",
+              "type": "boolean"
+            },
+            {
+              "name": "filters_filtered_by_rule",
+              "type": "boolean"
+            },
+            {
+              "name": "filters_is_custom_model",
+              "type": "boolean"
+            },
+            {
+              "name": "data_source",
+              "type": "dynamic"
+            },
+            {
+              "name": "data_source_type",
+              "type": "string"
+            },
+            {
+              "name": "data_source_sensor_name",
+              "type": "string"
+            },
+            {
+              "name": "data_source_sensor_id",
+              "type": "string"
+            },
+            {
+              "name": "unresolved_priority",
+              "type": "boolean"
+            },
+            {
+              "name": "status",
+              "type": "string"
+            },
+            {
+              "name": "change_type",
+              "type": "string"
+            },
+            {
+              "name": "is_prioritized",
+              "type": "boolean"
+            },
+            {
+              "name": "assignment",
+              "type": "dynamic"
+            },
+            {
+              "name": "assignment_id",
+              "type": "real"
+            },
+            {
+              "name": "assignment_assigned_by",
+              "type": "dynamic"
+            },
+            {
+              "name": "assignment_assigned_by_id",
+              "type": "real"
+            },
+            {
+              "name": "assignment_assigned_by_username",
+              "type": "string"
+            },
+            {
+              "name": "assignment_date_assigned",
+              "type": "datetime"
+            },
+            {
+              "name": "assignment_assigned_to",
+              "type": "dynamic"
+            },
+            {
+              "name": "assignment_assigned_to_id",
+              "type": "real"
+            },
+            {
+              "name": "assignment_assigned_to_username",
+              "type": "string"
+            },
+            {
+              "name": "reason",
+              "type": "string"
+            },
+            {
+              "name": "entity_type",
+              "type": "string"
+            },
+            {
+              "name": "d_detection_details",
+              "type": "dynamic"
+            },
+            {
+              "name": "is_targeting_key_asset",
+              "type": "boolean"
+            },
+            {
+              "name": "tags",
+              "type": "dynamic"
+            },
+            {
+              "name": "grouped_details",
+              "type": "dynamic"
+            },
+            {
+              "name": "normal_domains",
+              "type": "dynamic"
+            },
+            {
+              "name": "TimeGenerated",
+              "type": "datetime"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/dataCollectionRules",
+      "apiVersion": "2022-06-01",
+      "name": "[variables('dataRuleName')]",
+      "location": "[parameters('Location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/dataCollectionEndpoints', variables('endpointName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('WorkspaceName'), concat(parameters('DetectionsTableName'), '_CL'))]"
+      ],
+      "properties": {
+        "dataCollectionEndpointId": "[resourceId('Microsoft.Insights/dataCollectionEndpoints', variables('endpointName'))]",
+        "streamDeclarations": {
+          "[concat('Custom-', parameters('DetectionsTableName'))]": {
+            "columns": [
+              {
+                "name": "category",
+                "type": "string"
+              },
+              {
+                "name": "event_type",
+                "type": "string"
+              },
+              {
+                "name": "entity_name",
+                "type": "string"
+              },
+              {
+                "name": "detection_href",
+                "type": "string"
+              },
+              {
+                "name": "mitre",
+                "type": "dynamic"
+              },
+              {
+                "name": "certainty",
+                "type": "real"
+              },
+              {
+                "name": "d_type_vname",
+                "type": "string"
+              },
+              {
+                "name": "entity_id",
+                "type": "real"
+              },
+              {
+                "name": "event_timestamp",
+                "type": "datetime"
+              },
+              {
+                "name": "url",
+                "type": "string"
+              },
+              {
+                "name": "id",
+                "type": "real"
+              },
+              {
+                "name": "detection_id",
+                "type": "real"
+              },
+              {
+                "name": "threat",
+                "type": "real"
+              },
+              {
+                "name": "triaged",
+                "type": "boolean"
+              },
+              {
+                "name": "detection_type",
+                "type": "string"
+              },
+              {
+                "name": "severity",
+                "type": "real"
+              },
+              {
+                "name": "detail",
+                "type": "dynamic"
+              },
+              {
+                "name": "entity_uid",
+                "type": "string"
+              },
+              {
+                "name": "src_account",
+                "type": "dynamic"
+              },
+              {
+                "name": "src_account_id",
+                "type": "string"
+              },
+              {
+                "name": "src_account_name",
+                "type": "string"
+              },
+              {
+                "name": "src_account_url",
+                "type": "string"
+              },
+              {
+                "name": "src_account_groups",
+                "type": "dynamic"
+              },
+              {
+                "name": "src_host",
+                "type": "dynamic"
+              },
+              {
+                "name": "src_host_ip",
+                "type": "string"
+              },
+              {
+                "name": "src_host_name",
+                "type": "string"
+              },
+              {
+                "name": "src_host_url",
+                "type": "string"
+              },
+              {
+                "name": "src_host_groups",
+                "type": "dynamic"
+              },
+              {
+                "name": "src_host_id",
+                "type": "real"
+              },
+              {
+                "name": "src_host_is_key_asset",
+                "type": "boolean"
+              },
+              {
+                "name": "src_host_threat",
+                "type": "real"
+              },
+              {
+                "name": "src_host_certainty",
+                "type": "real"
+              },
+              {
+                "name": "src_external_host",
+                "type": "dynamic"
+              },
+              {
+                "name": "src_external_host_ip",
+                "type": "string"
+              },
+              {
+                "name": "src_external_host_name",
+                "type": "string"
+              },
+              {
+                "name": "dst_account",
+                "type": "dynamic"
+              },
+              {
+                "name": "dst_account_id",
+                "type": "string"
+              },
+              {
+                "name": "dst_account_name",
+                "type": "string"
+              },
+              {
+                "name": "dst_account_url",
+                "type": "string"
+              },
+              {
+                "name": "dst_account_groups",
+                "type": "dynamic"
+              },
+              {
+                "name": "dst_account_uid",
+                "type": "string"
+              },
+              {
+                "name": "dst_host",
+                "type": "dynamic"
+              },
+              {
+                "name": "dst_host_id",
+                "type": "string"
+              },
+              {
+                "name": "dst_host_ip",
+                "type": "string"
+              },
+              {
+                "name": "dst_host_name",
+                "type": "string"
+              },
+              {
+                "name": "dst_host_session_luid",
+                "type": "string"
+              },
+              {
+                "name": "dst_host_url",
+                "type": "string"
+              },
+              {
+                "name": "dst_host_groups",
+                "type": "dynamic"
+              },
+              {
+                "name": "dst_domain",
+                "type": "dynamic"
+              },
+              {
+                "name": "dst_domain_domain",
+                "type": "string"
+              },
+              {
+                "name": "dst_domain_dns",
+                "type": "string"
+              },
+              {
+                "name": "dst_domain_external_target",
+                "type": "string"
+              },
+              {
+                "name": "summary",
+                "type": "dynamic"
+              },
+              {
+                "name": "filters",
+                "type": "dynamic"
+              },
+              {
+                "name": "filters_triaged",
+                "type": "boolean"
+              },
+              {
+                "name": "filters_filtered_by_user",
+                "type": "boolean"
+              },
+              {
+                "name": "filters_filtered_by_ai",
+                "type": "boolean"
+              },
+              {
+                "name": "filters_filtered_by_rule",
+                "type": "boolean"
+              },
+              {
+                "name": "filters_is_custom_model",
+                "type": "boolean"
+              },
+              {
+                "name": "data_source",
+                "type": "dynamic"
+              },
+              {
+                "name": "data_source_type",
+                "type": "string"
+              },
+              {
+                "name": "data_source_sensor_name",
+                "type": "string"
+              },
+              {
+                "name": "data_source_sensor_id",
+                "type": "string"
+              },
+              {
+                "name": "unresolved_priority",
+                "type": "boolean"
+              },
+              {
+                "name": "status",
+                "type": "string"
+              },
+              {
+                "name": "change_type",
+                "type": "string"
+              },
+              {
+                "name": "is_prioritized",
+                "type": "boolean"
+              },
+              {
+                "name": "assignment",
+                "type": "dynamic"
+              },
+              {
+                "name": "assignment_id",
+                "type": "real"
+              },
+              {
+                "name": "assignment_assigned_by",
+                "type": "dynamic"
+              },
+              {
+                "name": "assignment_assigned_by_id",
+                "type": "real"
+              },
+              {
+                "name": "assignment_assigned_by_username",
+                "type": "string"
+              },
+              {
+                "name": "assignment_date_assigned",
+                "type": "datetime"
+              },
+              {
+                "name": "assignment_assigned_to",
+                "type": "dynamic"
+              },
+              {
+                "name": "assignment_assigned_to_id",
+                "type": "real"
+              },
+              {
+                "name": "assignment_assigned_to_username",
+                "type": "string"
+              },
+              {
+                "name": "reason",
+                "type": "string"
+              },
+              {
+                "name": "entity_type",
+                "type": "string"
+              },
+              {
+                "name": "d_detection_details",
+                "type": "dynamic"
+              },
+              {
+                "name": "is_targeting_key_asset",
+                "type": "boolean"
+              },
+              {
+                "name": "tags",
+                "type": "dynamic"
+              },
+              {
+                "name": "grouped_details",
+                "type": "dynamic"
+              },
+              {
+                "name": "normal_domains",
+                "type": "dynamic"
+              },
+              {
+                "name": "TimeGenerated",
+                "type": "datetime"
+              }
+            ]
+          }
+        },
+        "destinations": {
+          "logAnalytics": [
+            {
+              "workspaceResourceId": "[parameters('AppInsightsWorkspaceResourceID')]",
+              "name": "[concat('RuleDest', variables('suffix'))]"
+            }
+          ]
+        },
+        "dataFlows": [
+          {
+            "streams": [
+              "[concat('Custom-', parameters('DetectionsTableName'))]"
+            ],
+            "destinations": [
+              "[concat('RuleDest', variables('suffix'))]"
+            ],
+            "transformKql": "source\n| extend TimeGenerated = todatetime(now()), json_src_account = parse_json(src_account), json_src_host = parse_json(src_host), json_src_external_host = parse_json(src_external_host), json_dst_account = parse_json(dst_account), json_dst_host = parse_json(dst_host), json_dst_domain = parse_json(dst_domain), json_filters = parse_json(filters), json_data_source = parse_json(data_source), json_assignment = parse_json(assignment)\n| extend json_assignment_assigned_by = parse_json(json_assignment.assigned_by), json_assignment_assigned_to = parse_json(json_assignment.assigned_to)\n| extend src_account_id = tostring(json_src_account.id), src_account_name = tostring(json_src_account.name), src_account_url = tostring(json_src_account.url), src_account_groups = todynamic(json_src_account.groups), src_host_ip = tostring(json_src_host.ip), src_host_name = tostring(json_src_host.name), src_host_url = tostring(json_src_host.url), src_host_groups = todynamic(json_src_host.groups), src_host_id = toreal(json_src_host.id), src_host_is_key_asset = tobool(json_src_host.is_key_asset), src_host_threat = toreal(json_src_host.threat), src_host_certainty = toreal(json_src_host.certainty), src_external_host_ip = tostring(json_src_external_host.ip), src_external_host_name = tostring(json_src_external_host.name), dst_account_id = tostring(json_dst_account.id), dst_account_name = tostring(json_dst_account.name), dst_account_url = tostring(json_dst_account.url), dst_account_groups = todynamic(json_dst_account.groups), dst_account_uid = tostring(json_dst_account.uid), dst_host_id = tostring(json_dst_host.id), dst_host_ip = tostring(json_dst_host.ip), dst_host_name = tostring(json_dst_host.name), dst_host_session_luid = tostring(json_dst_host.session_luid), dst_host_url = tostring(json_dst_host.url), dst_host_groups = todynamic(json_dst_host.groups), dst_domain_domain = tostring(json_dst_domain.domain), dst_domain_dns = tostring(json_dst_domain.dns), dst_domain_external_target = tostring(json_dst_domain.external_target), filters_triaged = tobool(json_filters.triaged), filters_filtered_by_user = tobool(json_filters.filtered_by_user), filters_filtered_by_ai = tobool(json_filters.filtered_by_ai), filters_filtered_by_rule = tobool(json_filters.filtered_by_rule), filters_is_custom_model = tobool(json_filters.is_custom_model), data_source_type = tostring(json_data_source.type), data_source_sensor_name = tostring(json_data_source.sensor_name), data_source_sensor_id = tostring(json_data_source.sensor_id), assignment_id = toreal(json_assignment.id), assignment_assigned_by_id = toreal(json_assignment_assigned_by.id), assignment_assigned_by_username = tostring(json_assignment_assigned_by.username), assignment_date_assigned = todatetime(json_assignment.date_assigned), assignment_assigned_to_id = toreal(json_assignment_assigned_to.id), assignment_assigned_to_username = tostring(json_assignment_assigned_to.username)\n| project-away json_src_account, src_account, json_src_host, src_host, json_src_external_host, src_external_host, json_dst_account, dst_account, json_dst_host, dst_host, json_dst_domain, dst_domain, json_filters, filters, json_data_source, data_source, json_assignment, assignment, json_assignment_assigned_by, assignment_assigned_by, json_assignment_assigned_to, assignment_assigned_to",
+            "outputStream": "[concat('Custom-', parameters('DetectionsTableName'), '_CL')]"
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleDefinitions",
+      "apiVersion": "2022-04-01",
+      "name": "[variables('dcrRoleId')]",
+      "properties": {
+        "assignableScopes": [
+          "[resourceGroup().id]",
+          "[resourceId('Microsoft.Insights/dataCollectionRules', variables('dataRuleName'))]"
+        ],
+        "description": "Entra ID application access role for Vectra XDR Data Connector",
+        "permissions": [
+          {
+            "actions": [
+              "Microsoft.Insights/Register/Action",
+              "Microsoft.Support/*",
+              "Microsoft.Resources/subscriptions/resourceGroups/read"
+            ],
+            "dataActions": [
+              "Microsoft.Insights/Metrics/Write",
+              "Microsoft.Insights/Telemetry/Write"
+            ]
+          }
+        ],
+        "roleName": "[variables('dcrRoleName')]",
+        "type": "customRole"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, concat('DCR Role assignment', variables('FunctionName')))]",
+      "dependsOn": [
+        "[variables('dcrRoleId')]",
+        "[variables('dataRuleName')]"
+      ],
+      "scope": "[resourceId('Microsoft.Insights/dataCollectionRules', variables('dataRuleName'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('dcrRoleId'))]",
+        "principalId": "[parameters('AzureEntraObjectID')]"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('FunctionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "ApplicationId": "[variables('FunctionName')]",
+        "WorkspaceResourceId": "[parameters('AppInsightsWorkspaceResourceID')]"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2019-06-01",
+      "name": "[tolower(variables('FunctionName'))]",
+      "location": "[resourceGroup().location]",
+      "sku": {
+        "name": "Standard_LRS",
+        "tier": "Standard"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "networkAcls": {
+          "bypass": "AzureServices",
+          "virtualNetworkRules": [],
+          "ipRules": [],
+          "defaultAction": "Allow"
+        },
+        "supportsHttpsTrafficOnly": true,
+        "allowBlobPublicAccess": false,
+        "encryption": {
+          "requireInfrastructureEncryption": true,
+          "services": {
+            "file": {
+              "keyType": "Account",
+              "enabled": true
+            },
+            "blob": {
+              "keyType": "Account",
+              "enabled": true
+            }
+          },
+          "keySource": "Microsoft.Storage"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2019-06-01",
+      "name": "[concat(variables('FunctionName'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', tolower(variables('FunctionName')))]"
+      ],
+      "sku": {
+        "name": "Standard_LRS",
+        "tier": "Standard"
+      },
+      "properties": {
+        "cors": {
+          "corsRules": []
+        },
+        "deleteRetentionPolicy": {
+          "enabled": false
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices",
+      "apiVersion": "2019-06-01",
+      "name": "[concat(variables('FunctionName'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', tolower(variables('FunctionName')))]"
+      ],
+      "sku": {
+        "name": "Standard_LRS",
+        "tier": "Standard"
+      },
+      "properties": {
+        "cors": {
+          "corsRules": []
+        }
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2016-10-01",
+      "name": "[parameters('KeyVaultName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "sku": {
+          "family": "A",
+          "name": "Standard"
+        },
+        "tenantId": "[parameters('TenantID')]",
+        "accessPolicies": [
+          {
+            "tenantId": "[parameters('TenantID')]",
+            "objectId": "[parameters('AzureEntraObjectID')]",
+            "permissions": {
+              "secrets": [
+                "get",
+                "list",
+                "set",
+                "delete"
+              ]
+            }
+          }
+        ],
+        "enabledForDeployment": false,
+        "enabledForDiskEncryption": false,
+        "enabledForTemplateDeployment": true,
+        "enableSoftDelete": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2018-11-01",
+      "name": "[variables('FunctionName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', tolower(variables('FunctionName')))]",
+        "[resourceId('Microsoft.Insights/components', variables('FunctionName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('KeyVaultName'))]"
+      ],
+      "kind": "functionapp,linux",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "name": "[variables('FunctionName')]",
+        "httpsOnly": true,
+        "clientAffinityEnabled": true,
+        "alwaysOn": true,
+        "reserved": true,
+        "siteConfig": {
+          "linuxFxVersion": "python|3.12"
+        }
+      },
+      "resources": [
+        {
+          "apiVersion": "2018-11-01",
+          "type": "config",
+          "name": "appsettings",
+          "dependsOn": [
+            "[concat('Microsoft.Web/sites/', variables('FunctionName'))]"
+          ],
+          "properties": {
+            "FUNCTIONS_EXTENSION_VERSION": "~4",
+            "FUNCTIONS_WORKER_RUNTIME": "python",
+            "APPINSIGHTS_INSTRUMENTATIONKEY": "[reference(resourceId('Microsoft.insights/components', variables('FunctionName')), '2015-05-01').InstrumentationKey]",
+            "APPLICATIONINSIGHTS_CONNECTION_STRING": "[reference(resourceId('microsoft.insights/components', variables('FunctionName')), '2015-05-01').ConnectionString]",
+            "AzureWebJobsStorage": "[concat('DefaultEndpointsProtocol=https;AccountName=', toLower(variables('FunctionName')),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', toLower(variables('FunctionName'))), '2019-06-01').keys[0].value, ';EndpointSuffix=',toLower(variables('StorageSuffix')))]",
+            "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING": "[concat('DefaultEndpointsProtocol=https;AccountName=', toLower(variables('FunctionName')),';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', toLower(variables('FunctionName'))), '2019-06-01').keys[0].value, ';EndpointSuffix=',toLower(variables('StorageSuffix')))]",
+            "WEBSITE_CONTENTSHARE": "[toLower(variables('FunctionName'))]",
+            "VectraAPIBaseURL": "[parameters('VectraAPIBaseURL')]",
+            "VectraAPIClientId": "[parameters('VectraAPIClientId')]",
+            "VectraAPIClientSecret": "[parameters('VectraAPIClientSecret')]",
+            "KeyVaultName": "[parameters('KeyVaultName')]",
+            "AzureClientId": "[parameters('AzureClientID')]",
+            "AzureClientSecret": "[parameters('AzureClientSecret')]",
+            "AzureTenantId": "[parameters('TenantID')]",
+            "Scope": "[variables('scope')]",
+            "WorkspaceId": "[reference(variables('logWsResId'), '2022-10-01').customerId]",
+            "DataCollectionEndpoint": "[reference(resourceId('Microsoft.Insights/dataCollectionEndpoints', variables('endpointName')), '2022-06-01').logsIngestion.endpoint]",
+            "DataCollectionRuleId": "[reference(resourceId('Microsoft.Insights/dataCollectionRules', variables('dataRuleName')), '2022-06-01').immutableId]",
+            "DetectionsTableName": "[parameters('DetectionsTableName')]",
+            "DetectionsResponseSize": "[parameters('DetectionsResponseSize')]",
+            "ExcludeGroupedDetails": "[if(parameters('ExcludeGroupedDetails'), 'True', 'False')]",
+            "Schedule": "[parameters('DetectionsSchedule')]",
+            "LogLevel": "[parameters('LogLevel')]",
+            "FunctionAppName": "[variables('FunctionName')]",
+            "AzureResourceGroupName": "[resourceGroup().name]",
+            "AzureSubscriptionId": "[subscription().subscriptionId]",
+            "WEBSITE_RUN_FROM_PACKAGE": "https://github.com/shashankshah-crest/vectra-2.0/raw/refs/heads/main/VecXDR2412.zip"
+          }
+        }
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/accessPolicies",
+      "apiVersion": "2016-10-01",
+      "name": "[concat(parameters('KeyVaultName'), '/add')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('FunctionName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('KeyVaultName'))]"
+      ],
+      "properties": {
+        "accessPolicies": [
+          {
+            "tenantId": "[parameters('TenantID')]",
+            "objectId": "[reference(resourceId('Microsoft.Web/sites', variables('FunctionName')), '2019-08-01', 'full').identity.principalId]",
+            "permissions": {
+              "secrets": [
+                "get",
+                "list",
+                "set",
+                "delete"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2019-06-01",
+      "name": "[concat(variables('FunctionName'), '/default/azure-webjobs-hosts')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('FunctionName'), 'default')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('FunctionName'))]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2019-06-01",
+      "name": "[concat(variables('FunctionName'), '/default/azure-webjobs-secrets')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('FunctionName'), 'default')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('FunctionName'))]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2019-06-01",
+      "name": "[concat(variables('FunctionName'), '/default/', tolower(variables('FunctionName')))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', variables('FunctionName'), 'default')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('FunctionName'))]"
+      ],
+      "properties": {
+        "shareQuota": 5120
+      }
+    }
+  ],
+  "outputs": {
+    "FunctionAppName": {
+      "type": "string",
+      "value": "[variables('FunctionName')]"
+    },
+    "DataCollectionEndpoint": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/dataCollectionEndpoints', variables('endpointName')), '2022-06-01').logsIngestion.endpoint]"
+    },
+    "DataCollectionRuleImmutableId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/dataCollectionRules', variables('dataRuleName')), '2022-06-01').immutableId]"
+    }
+  }
+}
