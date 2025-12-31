@@ -1,0 +1,117 @@
+name: Deploy Azure Function to Sentinel
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '*.zip'
+      - 'azuredeploy_Connector_*.json'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Find uploaded zip and ARM template
+        id: find_files
+        run: |
+          # Find the zip file (assuming only one zip in root)
+          ZIP_FILE=$(ls *.zip 2>/dev/null | head -n 1)
+          
+          if [ -z "$ZIP_FILE" ]; then
+            echo "❌ Error: No zip file found in repository"
+            exit 1
+          fi
+          
+          echo "zip_file=${ZIP_FILE}" >> $GITHUB_OUTPUT
+          echo "✅ Found zip file: ${ZIP_FILE}"
+          
+          # Find ARM template matching pattern azuredeploy_Connector_*.json
+          ARM_FILE=$(ls azuredeploy_Connector_*.json 2>/dev/null | head -n 1)
+          
+          if [ -z "$ARM_FILE" ]; then
+            echo "❌ Error: No ARM template matching 'azuredeploy_Connector_*.json' found"
+            exit 1
+          fi
+          
+          echo "arm_file=${ARM_FILE}" >> $GITHUB_OUTPUT
+          echo "✅ Found ARM template: ${ARM_FILE}"
+      
+      - name: Generate GitHub Raw URL
+        id: raw_url
+        run: |
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          BRANCH="${{ github.ref_name }}"
+          ZIP_FILE="${{ steps.find_files.outputs.zip_file }}"
+          
+          RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${BRANCH}/${ZIP_FILE}"
+          
+          echo "raw_url=${RAW_URL}" >> $GITHUB_OUTPUT
+          echo "📦 Package Raw URL: ${RAW_URL}"
+      
+      - name: Update ARM template with raw URL
+        id: update_arm
+        run: |
+          ARM_FILE="${{ steps.find_files.outputs.arm_file }}"
+          RAW_URL="${{ steps.raw_url.outputs.raw_url }}"
+          
+          # Create updated ARM template
+          UPDATED_ARM="updated_${ARM_FILE}"
+          
+          # Read ARM template and update WEBSITE_RUN_FROM_PACKAGE value
+          # Using jq to properly update JSON
+          sudo apt-get update && sudo apt-get install -y jq
+          
+          # Update the ARM template - find WEBSITE_RUN_FROM_PACKAGE anywhere in the JSON structure
+          # This handles both direct appSettings and nested resources structures
+          jq --arg url "$RAW_URL" '
+            walk(
+              if type == "object" and has("WEBSITE_RUN_FROM_PACKAGE") then
+                .WEBSITE_RUN_FROM_PACKAGE = $url
+              else
+                .
+              end
+            )
+          ' "$ARM_FILE" > "$UPDATED_ARM"
+          
+          echo "updated_arm_file=${UPDATED_ARM}" >> $GITHUB_OUTPUT
+          echo "✅ ARM template updated with raw URL"
+          echo "📄 Updated ARM file: ${UPDATED_ARM}"
+          
+          # Show the updated value for verification
+          echo "🔍 Verifying WEBSITE_RUN_FROM_PACKAGE value:"
+          jq '.. | objects | select(has("WEBSITE_RUN_FROM_PACKAGE")) | .WEBSITE_RUN_FROM_PACKAGE' "$UPDATED_ARM" || echo "Note: Verification may vary based on structure"
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Deploy ARM Template to Azure Sentinel
+        uses: azure/arm-deploy@v1
+        with:
+          subscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          resourceGroupName: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          template: ${{ steps.update_arm.outputs.updated_arm_file }}
+          parameters: >
+            functionAppName=${{ secrets.FUNCTION_APP_NAME }}
+            sentinelWorkspaceId=${{ secrets.SENTINEL_WORKSPACE_ID }}
+            sentinelWorkspaceName=${{ secrets.SENTINEL_WORKSPACE_NAME }}
+            location=${{ secrets.AZURE_LOCATION }}
+      
+      - name: Deployment Summary
+        run: |
+          echo "### 🚀 Deployment Completed Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Zip File:** ${{ steps.find_files.outputs.zip_file }}" >> $GITHUB_STEP_SUMMARY
+          echo "**ARM Template:** ${{ steps.find_files.outputs.arm_file }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Package URL:** ${{ steps.raw_url.outputs.raw_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Function App:** ${{ secrets.FUNCTION_APP_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Resource Group:** ${{ secrets.AZURE_RESOURCE_GROUP }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Sentinel Workspace:** ${{ secrets.SENTINEL_WORKSPACE_NAME }}" >> $GITHUB_STEP_SUMMARY
