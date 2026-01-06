@@ -1010,37 +1010,6 @@
       }
     },
     {
-      "type": "Microsoft.KeyVault/vaults",
-      "apiVersion": "2016-10-01",
-      "name": "[parameters('KeyVaultName')]",
-      "location": "[resourceGroup().location]",
-      "properties": {
-        "sku": {
-          "family": "A",
-          "name": "Standard"
-        },
-        "tenantId": "[parameters('TenantID')]",
-        "accessPolicies": [
-          {
-            "tenantId": "[parameters('TenantID')]",
-            "objectId": "[parameters('AzureEntraObjectID')]",
-            "permissions": {
-              "secrets": [
-                "get",
-                "list",
-                "set",
-                "delete"
-              ]
-            }
-          }
-        ],
-        "enabledForDeployment": false,
-        "enabledForDiskEncryption": false,
-        "enabledForTemplateDeployment": true,
-        "enableSoftDelete": true
-      }
-    },
-    {
       "type": "Microsoft.Web/sites",
       "apiVersion": "2018-11-01",
       "name": "[variables('FunctionName')]",
